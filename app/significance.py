@@ -82,23 +82,26 @@ def benjamini_hochberg(p_values: list[float]) -> list[float]:
     return result
 
 
+def _rate_per_day(users: int, elapsed_days: float) -> float:
+    if users > 0 and elapsed_days >= MIN_ELAPSED_DAYS_FOR_RATE_ESTIMATE:
+        return users / elapsed_days
+    return 0.0
+
+
 def compute_significance(
     variant_results: list[dict],
     created_at: str,
     now: Optional[datetime] = None,
 ) -> dict:
     """variant_results[0] is treated as control; the rest are treatments
-    compared only against it."""
+    compared only against it. Control is positional: whichever variant was
+    first in the experiment's variant list at creation time, by name."""
     control = variant_results[0]
     treatments = variant_results[1:]
 
-    total_users = sum(v["users"] for v in variant_results)
     elapsed = (now or datetime.now(timezone.utc)) - datetime.fromisoformat(created_at)
     elapsed_days = elapsed.total_seconds() / 86400
-    if total_users > 0 and elapsed_days >= MIN_ELAPSED_DAYS_FOR_RATE_ESTIMATE:
-        rate_per_day = total_users / elapsed_days
-    else:
-        rate_per_day = 0.0
+    rates_per_day = {v["name"]: _rate_per_day(v["users"], elapsed_days) for v in variant_results}
 
     zero_conversion_warnings = []
     for variant in variant_results:
@@ -107,15 +110,23 @@ def compute_significance(
                 {
                     "variant": variant["name"],
                     "message": (
-                        f"Variant '{variant['name']}' has 0 conversions out of "
-                        f"{variant['users']} users - possible tracking problem"
+                        f"Variant '{variant['name']}' has 0% conversions out of "
+                        f"{variant['users']} users. This may be a real result or a "
+                        f"tracking/integration problem - it does not by itself indicate which."
                     ),
                 }
             )
 
     comparisons = []
     for treatment in treatments:
-        comparisons.append(_compare_to_control(control, treatment, rate_per_day))
+        comparisons.append(
+            _compare_to_control(
+                control,
+                treatment,
+                rates_per_day[control["name"]],
+                rates_per_day[treatment["name"]],
+            )
+        )
 
     ok_indices = [i for i, c in enumerate(comparisons) if c["status"] == "ok"]
     ok_pvalues = [comparisons[i]["p_value"] for i in ok_indices]
@@ -131,7 +142,9 @@ def compute_significance(
     }
 
 
-def _compare_to_control(control: dict, treatment: dict, rate_per_day: float) -> dict:
+def _compare_to_control(
+    control: dict, treatment: dict, control_rate_per_day: float, treatment_rate_per_day: float
+) -> dict:
     control_users, control_conv = control["users"], control["conversions"]
     treatment_users, treatment_conv = treatment["users"], treatment["conversions"]
     warnings: list[str] = []
@@ -143,27 +156,55 @@ def _compare_to_control(control: dict, treatment: dict, rate_per_day: float) -> 
 
     if control_users == 0 or treatment_users == 0:
         required_n = required_sample_size_per_group(control["conversion_rate"]) if control_users else None
+        if required_n is None:
+            reason = (
+                "the control variant has no observed users yet"
+                if control_users == 0
+                else "the control variant has 0 observed conversions"
+            )
+            warnings.append(
+                f"Cannot estimate the required sample size yet: {reason}, so the target "
+                "effect size is undefined."
+            )
+        days_needed, days_warning = _estimated_days_needed(
+            required_n,
+            control["name"],
+            control_users,
+            treatment["name"],
+            treatment_users,
+            control_rate_per_day,
+            treatment_rate_per_day,
+        )
+        if days_warning:
+            warnings.append(days_warning)
         return {
             **base,
             "status": "insufficient_data",
             "required_users_per_group": required_n,
             "additional_users_needed": _additional_needed(required_n, control_users, treatment_users),
-            "estimated_days_needed": _estimated_days(
-                required_n, control_users, treatment_users, rate_per_day
-            ),
+            "estimated_days_needed": days_needed,
             "warnings": warnings,
         }
 
     required_n = required_sample_size_per_group(control["conversion_rate"])
     if required_n is not None and (control_users < required_n or treatment_users < required_n):
+        days_needed, days_warning = _estimated_days_needed(
+            required_n,
+            control["name"],
+            control_users,
+            treatment["name"],
+            treatment_users,
+            control_rate_per_day,
+            treatment_rate_per_day,
+        )
+        if days_warning:
+            warnings.append(days_warning)
         return {
             **base,
             "status": "insufficient_data",
             "required_users_per_group": required_n,
             "additional_users_needed": _additional_needed(required_n, control_users, treatment_users),
-            "estimated_days_needed": _estimated_days(
-                required_n, control_users, treatment_users, rate_per_day
-            ),
+            "estimated_days_needed": days_needed,
             "warnings": warnings,
         }
 
@@ -199,13 +240,50 @@ def _additional_needed(required_n: Optional[int], control_users: int, treatment_
     return max(required_n - control_users, required_n - treatment_users, 0)
 
 
-def _estimated_days(
+def _estimated_days_needed(
     required_n: Optional[int],
+    control_name: str,
     control_users: int,
+    treatment_name: str,
     treatment_users: int,
-    rate_per_day: float,
-) -> Optional[float]:
-    additional = _additional_needed(required_n, control_users, treatment_users)
-    if additional is None or additional == 0 or rate_per_day <= 0:
-        return None
-    return additional / rate_per_day
+    control_rate_per_day: float,
+    treatment_rate_per_day: float,
+) -> tuple[Optional[float], Optional[str]]:
+    """Days until BOTH groups reach required_n, using each group's own observed
+    enrollment rate. A shared rate would misestimate the lagging group whenever
+    traffic is split unevenly between variants.
+
+    Returns (days_needed, warning). warning is set instead of silently
+    returning None when a lagging group's enrollment rate isn't measurable yet
+    (too new, or no users observed at all) - consistent with how an
+    unmeasurable baseline conversion rate is explained elsewhere."""
+    if required_n is None:
+        return None, None
+    deficits = {
+        control_name: max(required_n - control_users, 0),
+        treatment_name: max(required_n - treatment_users, 0),
+    }
+    rates = {control_name: control_rate_per_day, treatment_name: treatment_rate_per_day}
+    if all(deficit == 0 for deficit in deficits.values()):
+        return None, None
+
+    days_needed = []
+    unmeasurable = []
+    for name, deficit in deficits.items():
+        if deficit == 0:
+            continue
+        rate = rates[name]
+        if rate <= 0:
+            unmeasurable.append(name)
+            continue
+        days_needed.append(deficit / rate)
+
+    if unmeasurable:
+        names = " and ".join(f"'{n}'" for n in unmeasurable)
+        warning = (
+            f"Cannot estimate days needed yet: enrollment rate for {names} is not "
+            "yet measurable (too new, or no users observed yet)."
+        )
+        return None, warning
+
+    return max(days_needed), None

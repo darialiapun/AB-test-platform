@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 venv/
 *.db
+.DS_Store
+.agents/
+.claude/
+skills-lock.json
