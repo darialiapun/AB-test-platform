@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, HTTPException
 
-from app import storage
+from app import significance, storage
 from app.bucketing import assign_variant
 from app.schemas import (
     EventIn,
@@ -56,8 +56,14 @@ def create_app(db_path: str) -> FastAPI:
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
         variant_names = [v["name"] for v in experiment["variants"]]
+        if len(variant_names) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="At least two variants (control + one treatment) are required to compute results",
+            )
         results = storage.get_results(app.state.db_path, experiment_id, variant_names)
-        return ResultsOut(variants=results)
+        sig = significance.compute_significance(results, experiment["created_at"])
+        return ResultsOut(variants=results, significance=sig)
 
     return app
 

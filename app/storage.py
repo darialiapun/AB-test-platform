@@ -89,7 +89,7 @@ def get_experiment(db_path: str, experiment_id: str) -> Optional[dict]:
         return None
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT numeric_id, name, variants, status FROM experiments WHERE numeric_id = ?",
+            "SELECT numeric_id, name, variants, status, created_at FROM experiments WHERE numeric_id = ?",
             (numeric_id,),
         ).fetchone()
     if row is None:
@@ -99,6 +99,7 @@ def get_experiment(db_path: str, experiment_id: str) -> Optional[dict]:
         "name": row["name"],
         "variants": json.loads(row["variants"]),
         "status": row["status"],
+        "created_at": row["created_at"],
     }
 
 
