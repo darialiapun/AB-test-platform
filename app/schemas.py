@@ -74,6 +74,13 @@ class SignificanceOut(BaseModel):
     zero_conversion_warnings: list[ZeroConversionWarning]
 
 
+class SrmResult(BaseModel):
+    detected: bool
+    p_value: float
+
+
 class ResultsOut(BaseModel):
     variants: list[ResultVariant]
     significance: SignificanceOut
+    srm: Optional[SrmResult] = None
+    srm_warning: Optional[str] = None

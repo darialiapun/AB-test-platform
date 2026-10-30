@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, HTTPException
 
-from app import significance, storage
+from app import significance, srm, storage
 from app.bucketing import assign_variant
 from app.schemas import (
     EventIn,
@@ -51,7 +51,7 @@ def create_app(db_path: str) -> FastAPI:
         return EventOut(status="recorded")
 
     @app.get("/experiments/{experiment_id}/results", response_model=ResultsOut)
-    def get_results(experiment_id: str) -> ResultsOut:
+    def get_results(experiment_id: str, check_srm: bool = False) -> ResultsOut:
         experiment = storage.get_experiment(app.state.db_path, experiment_id)
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
@@ -63,7 +63,19 @@ def create_app(db_path: str) -> FastAPI:
             )
         results = storage.get_results(app.state.db_path, experiment_id, variant_names)
         sig = significance.compute_significance(results, experiment["created_at"])
-        return ResultsOut(variants=results, significance=sig)
+
+        srm_result = None
+        srm_warning = None
+        if check_srm:
+            weights = [v["weight"] for v in experiment["variants"]]
+            srm_result = srm.detect_srm(results, weights)
+            if srm_result is None:
+                srm_warning = (
+                    "Not enough observed users in at least one variant for the SRM "
+                    f"chi-square test to be valid (fewer than {srm.MIN_USERS_FOR_VALID_SRM_TEST} users)."
+                )
+
+        return ResultsOut(variants=results, significance=sig, srm=srm_result, srm_warning=srm_warning)
 
     return app
 
