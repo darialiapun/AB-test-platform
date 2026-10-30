@@ -43,6 +43,7 @@
 {"id": "exp_1", "name": "button_color", "variants": [...], "status": "running"}
 ```
 Правило: сумма `weight` по вариантам должна быть равна 100, иначе 400.
+Правило: передано должно быть не менее двух вариантов, иначе 400.
 
 ### `GET /experiments/{id}/variant?user_id={user_id}`
 Получить вариант для пользователя.
@@ -181,6 +182,13 @@
 - Когда: `GET /results?check_srm=true`.
 - Тогда: `srm = null`, `srm_warning` содержит объяснение, упоминающее валидность теста (не "надёжность" — порог защищает только от невалидной математики, не гарантирует, что при user count чуть выше порога тест имеет достаточную мощность, чтобы реально поймать перекос).
 - Проверяется: `test_detect_srm_returns_none_when_any_variant_has_too_few_users`, `test_results_endpoint_srm_null_with_warning_when_insufficient_data`.
+
+**REQ-14.** IF в `POST /experiments` передано меньше двух вариантов, THEN сервис SHALL отклонить запрос с 400 и не создавать эксперимент.
+- Дано: тело запроса `POST /experiments` с `variants`, содержащим 0 или 1 элемент.
+- Когда: вызван `POST /experiments`.
+- Тогда: ответ — 400 с `detail`, объясняющим, что нужно минимум два варианта (контроль + хотя бы один тестовый); эксперимент не сохраняется.
+- Проверяется: `test_create_experiment_rejects_fewer_than_two_variants` (`tests/test_experiments.py`).
+- Примечание: ранее эта проверка жила в `GET /experiments/{id}/results` (см. историю REQ до этой правки) — после переноса в `POST /experiments` создать эксперимент с одним вариантом стало невозможно, поэтому проверка в `/results` убрана как недостижимый код. `test_single_variant_experiment_rejected_at_creation` (`tests/test_significance.py`) оставлен как регрессионный тест на тот же сквозной сценарий через `POST /experiments`.
 
 #### Пробелы по шаблонам (честно, без выдумывания)
 

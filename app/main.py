@@ -21,6 +21,11 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.post("/experiments", response_model=ExperimentOut, status_code=201)
     def create_experiment(payload: ExperimentCreate) -> ExperimentOut:
+        if len(payload.variants) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="At least two variants (control + one treatment) are required to create an experiment",
+            )
         total_weight = sum(v.weight for v in payload.variants)
         if total_weight != 100:
             raise HTTPException(status_code=400, detail="Sum of variant weights must equal 100")
@@ -56,11 +61,6 @@ def create_app(db_path: str) -> FastAPI:
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
         variant_names = [v["name"] for v in experiment["variants"]]
-        if len(variant_names) < 2:
-            raise HTTPException(
-                status_code=400,
-                detail="At least two variants (control + one treatment) are required to compute results",
-            )
         results = storage.get_results(app.state.db_path, experiment_id, variant_names)
         sig = significance.compute_significance(results, experiment["created_at"])
 

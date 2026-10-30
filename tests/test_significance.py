@@ -210,11 +210,12 @@ def test_zero_conversion_variant_does_not_crash_and_warns():
         os.remove(db_path)
 
 
-def test_single_variant_experiment_returns_error():
+def test_single_variant_experiment_rejected_at_creation():
     client, db_path = make_client()
     try:
-        experiment_id, _ = create_experiment(client, [{"name": "control", "weight": 100}])
-        response = client.get(f"/experiments/{experiment_id}/results")
+        response = client.post(
+            "/experiments", json={"name": "exp", "variants": [{"name": "control", "weight": 100}]}
+        )
         assert response.status_code == 400
         assert "detail" in response.json()
     finally:
